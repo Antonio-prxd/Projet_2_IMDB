@@ -159,7 +159,7 @@ def load_data(path: str) -> pd.DataFrame:
 # IMAGE LOADER (avec conversion base64 pour fond d'écran)
 # --------------------
 BASE_DIR = Path(__file__).resolve().parent
-IMG_HOME = BASE_DIR / "assets" / "images" / "Image_page_acceuil.png"
+IMG_HOME = BASE_DIR / "assets" / "images" / "Image_page_acceuil.png.png"
 
 def _img_to_base64(path: Path) -> str:
     with open(path, "rb") as f:
