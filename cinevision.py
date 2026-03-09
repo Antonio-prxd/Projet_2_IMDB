@@ -7,13 +7,16 @@
 # --------------------
 import os
 import io
+import json
 import zipfile
 import base64
+import urllib.parse
 from pathlib import Path
 import re
 import streamlit as st
 import pandas as pd
 import numpy as np
+from deep_translator import GoogleTranslator
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
@@ -50,6 +53,98 @@ POIDS = {
 }
 
 # --------------------
+# TRADUCTION SYNOPSIS (GOOGLETRANSLATOR)
+# --------------------
+def translate_resume(text):
+    try:
+        if text and text != "":
+            return GoogleTranslator(source='auto', target='fr').translate(text)
+        return text
+    except Exception:
+        return text
+
+# --------------------
+# PERSISTANCE FAVORIS (JSON)
+# --------------------
+FAV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favorites.json")
+
+#--------------------
+# PERSISTANCE FAVORIS : chargement depuis JSON
+#--------------------
+def load_favorites():
+    """Charge les favoris depuis le fichier JSON local."""
+    try:
+        if os.path.exists(FAV_FILE):
+            with open(FAV_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+    except Exception:
+        pass
+    return set()
+
+#--------------------
+# PERSISTANCE FAVORIS : sauvegarde dans JSON
+#--------------------
+def save_favorites(favs: set):
+    """Sauvegarde les favoris dans le fichier JSON local."""
+    try:
+        with open(FAV_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(favs), f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+# --------------------
+# ESPACE UTILISATEUR (FAVORIS & RÉCENTS)
+# --------------------
+def init_user_space():
+    if "favorites" not in st.session_state:
+        st.session_state["favorites"] = load_favorites()  # Chargé depuis JSON
+    if "recently_viewed" not in st.session_state:
+        st.session_state["recently_viewed"] = []
+
+def toggle_favorite(movie_title: str, is_callback=False, from_modal=False):
+    if "favorites" not in st.session_state:
+        st.session_state["favorites"] = load_favorites()
+    if movie_title in st.session_state["favorites"]:
+        st.session_state["favorites"].discard(movie_title)
+    else:
+        st.session_state["favorites"].add(movie_title)
+    save_favorites(st.session_state["favorites"])  # Sauvegarde immédiate
+
+    # Nettoyage chirurgical du "zombie modal state" :
+    # Si on toggle depuis la grille (pas depuis le modal), on s'assure que
+    # modal_active_movie est effacé pour pas qu'il se rouvre au rerun.
+    if is_callback and not from_modal:
+        if "modal_active_movie" in st.session_state:
+            del st.session_state["modal_active_movie"]
+
+    if not is_callback:
+        st.rerun()
+
+#---------------------
+# RÉCENTS CONSULTÉS : gestion de la liste
+#---------------------
+def add_recently_viewed(movie_title: str):
+    # Créer une NOUVELLE liste pour forcer Streamlit à détecter le changement
+    # (indispensable pour les callbacks joués à l'intérieur des Modales/Fragments)
+    current_list = list(st.session_state.get("recently_viewed", []))
+
+    # Éviter les doublons et mettre en tête
+    if movie_title in current_list:
+        current_list.remove(movie_title)
+    current_list.insert(0, movie_title)
+
+    # Limiter à 8
+    st.session_state["recently_viewed"] = current_list[:8]
+
+#--------------------
+# OUVERTURE FICHE FILM (MODAL)
+#---------------------
+def open_movie_details(movie_title: str):
+    """Callback pour ouvrir la fiche d'un film."""
+    st.session_state["modal_active_movie"] = movie_title
+    add_recently_viewed(movie_title)
+
+# --------------------
 # DATA LOADER
 # --------------------
 @st.cache_data(show_spinner=False)
@@ -61,10 +156,10 @@ def load_data(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # --------------------
-# IMAGE LOADER
+# IMAGE LOADER (avec conversion base64 pour fond d'écran)
 # --------------------
 BASE_DIR = Path(__file__).resolve().parent
-IMG_HOME = BASE_DIR / "assets" / "images" / "Image_page_acceuil.png.png"
+IMG_HOME = BASE_DIR / "assets" / "images" / "Image_page_acceuil.png"
 
 def _img_to_base64(path: Path) -> str:
     with open(path, "rb") as f:
@@ -74,7 +169,6 @@ def _img_to_base64(path: Path) -> str:
 # ============================================================
 # UI UTILITIES — CSS GLOBAL + COMPOSANTS
 # ============================================================
-
 def inject_global_css():
     """Injecte le CSS global CineData-style (1 seule injection, en tête de main())."""
     st.markdown(
@@ -120,15 +214,47 @@ def inject_global_css():
             border-right: 1px solid rgba(155,89,245,0.22) !important;
             min-width: 250px;
         }
-        /* Force text to stay white in the dark sidebar regardless of theme */
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] span,
-        section[data-testid="stSidebar"] div,
-        section[data-testid="stSidebar"] h1,
-        section[data-testid="stSidebar"] h2,
-        section[data-testid="stSidebar"] h3 {
+        /* Sidebar text color: Force white for labels/p on the dark sidebar bg */
+        section[data-testid="stSidebar"] label {
             color: #ffffff !important;
+            font-weight: 600 !important;
+        }
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] .stMarkdown p,
+        section[data-testid="stSidebar"] .stMarkdown li {
+            color: #ffffff !important;
+        }
+
+        .sidebar-logo-wrap {
+            text-align: center;
+            padding: 18px 4px 10px;
+        }
+        .sidebar-logo-title {
+            font-family: 'Cinzel', serif;
+            font-size: 1.6rem;
+            font-weight: 900;
+            letter-spacing: .1em;
+            line-height: 1.1;
+            text-shadow: 0 0 16px rgba(255,215,0,.45);
+        }
+        .sidebar-logo-cine {
+            color: #FFD700 !important;
+        }
+        .sidebar-logo-vision {
+            color: #ffffff !important;
+        }
+        .sidebar-logo-subtitle {
+            font-size: .72rem;
+            color: #7880a0 !important;
+            letter-spacing: .2em;
+            text-transform: uppercase;
+            margin-top: 4px;
+        }
+        .user-space-title {
+            color: #ffffff !important;
+            font-weight: 900 !important;
+            font-family: var(--font-title);
+            letter-spacing: 1px;
         }
 
         section[data-testid="stSidebar"] > div:first-child {
@@ -185,19 +311,79 @@ def inject_global_css():
             box-shadow: 0 8px 30px rgba(109, 40, 217, 0.6) !important;
             background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%) !important;
         }
-
-        /* Cache les boutons Streamlit qui servent de trigger sans casser le clic */
-        .movie-card + div button {
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-            opacity: 0 !important;
-            z-index: 20 !important;
-            padding: 0 !important;
-            border: none !important;
+        /* ─── OVERLAY FAVORIS : étoile HTML visuelle dans le poster ─── */
+        /* Container positionné pour ancrer les boutons overlay */
+        [data-testid="stVerticalBlock"]:has(.movie-card-outer) {
+            position: relative !important;
+            overflow: visible !important;
         }
+
+
+        /* ─── ÉTOILE FAVORIS & BOUTON VOIR LA FICHE (Positionnement robuste via element-container) ─── */
+        /* 1) Le wrapper `st.container()` génère un "stVerticalBlock". On rend CE bloc relatif. */
+        [data-testid="stVerticalBlock"]:has(> .element-container .movie-card-outer) {
+            position: relative !important;
+            overflow: visible !important;
+            z-index: 10;
+        }
+
+        /*
+           2) Bouton étoile favori (1er element-container après la carte)
+           Rendu absolu -> on le sort du flux normal, donc 0 place prise en dessous !
+           (Ajout du > .stMarkdown pour ne pas cibler les conteneurs de cartes entières)
+        */
+        .element-container:has(> .stMarkdown):has(.movie-card-outer) + .element-container {
+            position: absolute !important;
+            top: 10px !important;
+            right: 10px !important;
+            width: auto !important;
+            height: auto !important;
+            z-index: 40 !important;
+            pointer-events: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
+        /* Style de la pastille étoile : bouton compact, rond, fond demi-transparent sombre */
+        .element-container:has(> .stMarkdown):has(.movie-card-outer) + .element-container [data-testid="stButton"] button {
+            background: rgba(0,0,0,0.5) !important;
+            background-color: rgba(0,0,0,0.5) !important;
+            border: 1px solid rgba(255,255,255,0.15) !important;
+            border-radius: 50% !important;
+            box-shadow: none !important;
+            outline: none !important;
+            color: rgba(255,255,255,0.8) !important;
+            font-size: 1.15rem !important;
+            padding: 0 !important;
+            min-height: unset !important;
+            width: 32px !important;
+            height: 32px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            line-height: 1 !important;
+            text-shadow: none !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .element-container:has(> .stMarkdown):has(.movie-card-outer) + .element-container [data-testid="stButton"] button:hover {
+            color: #FFD700 !important;
+            background: rgba(0,0,0,0.8) !important;
+            background-color: rgba(0,0,0,0.8) !important;
+            border-color: rgba(255,215,0,0.4) !important;
+            transform: scale(1.1) !important;
+        }
+
+        /* Étoile active (film dans les favoris) */
+        .element-container:has(> .stMarkdown):has(.movie-card-outer) + .element-container [data-testid="stButton"] button[kind="primary"] {
+            color: #FFD700 !important;
+            background: rgba(0,0,0,0.7) !important;
+            background-color: rgba(0,0,0,0.7) !important;
+            border-color: rgba(255,215,0,0.3) !important;
+            text-shadow: none !important;
+        }
+
+
         .movie-poster-container {
             width: 100%;
             aspect-ratio: 2/3;
@@ -225,17 +411,37 @@ def inject_global_css():
         }
         .movie-title {
             font-family: var(--font-body);
-            font-weight: 800; font-size: 0.95rem; color: white;
+            font-weight: 800; font-size: 0.95rem;
+            color: white !important; /* Keep white as it's over dark poster posters */
             margin-bottom: 6px; line-height: 1.2;
             text-shadow: 0 2px 4px rgba(0,0,0,0.8);
             display: -webkit-box; -webkit-line-clamp: 2;
             -webkit-box-orient: vertical; overflow: hidden;
         }
         .movie-meta {
-            font-size: 0.8rem; color: #ccd0e0; display: flex; align-items: center; gap: 8px; font-weight: 600;
+            font-size: 0.8rem; color: #e0e0e0; display: flex; align-items: center; gap: 8px; font-weight: 600;
         }
         .movie-votes {
-            font-size: 0.75rem; color: #8890cc; margin-top: 4px; display: flex; align-items: center; gap: 4px;
+            font-size: 0.75rem; color: #a0a8f0; margin-top: 4px; display: flex; align-items: center; gap: 4px;
+        }
+
+        /* Synopsis visibility: Adapt to theme */
+        .movie-synopsis {
+            color: inherit !important;
+            line-height: 1.8;
+            margin-bottom: 1.5rem;
+            font-size: 1.05rem;
+            opacity: 0.95;
+        }
+
+        /* Details labels: Consistent branding, high contrast */
+        .detail-label {
+            font-weight: 800;
+            color: var(--violet);
+            text-transform: uppercase;
+            font-size: 0.78rem;
+            letter-spacing: 0.5px;
+            margin-right: 4px;
         }
 
         /* ──────────────────────────────────────────────
@@ -287,24 +493,21 @@ def inject_global_css():
 
         /* ─── BOUTONS GÉNÉRAUX ─── */
         .stButton > button {
-            background: rgba(155,89,245,0.10) !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(155,89,245,0.28) !important;
+            background: rgba(155,89,245,0.12) !important;
+            color: inherit !important;
+            border: 2px solid rgba(155,89,245,0.45) !important;
             border-radius: 12px !important;
-            font-weight: 600 !important;
-            padding: 10px 24px !important;
+            font-weight: 700 !important;
+            padding: 8px 24px !important;
             transition: all .2s ease !important;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.18) !important;
-            backdrop-filter: blur(8px) !important;
-            -webkit-backdrop-filter: blur(8px) !important;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
         }
 
         .stButton > button:hover {
-            background: rgba(155,89,245,0.16) !important;
-            border-color: rgba(155,89,245,0.45) !important;
+            background: rgba(155,89,245,0.2) !important;
+            border-color: rgba(155,89,245,0.7) !important;
             transform: translateY(-1px) !important;
-            box-shadow: 0 6px 18px rgba(155,89,245,0.18) !important;
-            filter: none !important;
+            box-shadow: 0 6px 15px rgba(155,89,245,0.2) !important;
         }
 
         .stButton > button[kind="primary"] {
@@ -327,6 +530,28 @@ def inject_global_css():
             border-radius: 8px !important;
             color: inherit !important;
         }
+
+        /* Surgical Fix: Sidebar inputs with dark placeholders and black text for visibility */
+        section[data-testid="stSidebar"] .stTextInput input {
+            color: #1a1a1a !important;
+            background: rgba(255,255,255,0.95) !important;
+        }
+        section[data-testid="stSidebar"] .stTextInput input::placeholder {
+            color: #666666 !important;
+            opacity: 1;
+        }
+
+        /* Surgical Fix: "Derniers consultés" buttons (Force deep dark bg + white text to avoid white-on-white) */
+        section[data-testid="stSidebar"] [data-testid="stButton"] button {
+            color: #ffffff !important;
+            background: rgba(10, 10, 30, 0.85) !important;
+            border: 1px solid rgba(155,89,245,0.5) !important;
+            text-shadow: 0 0 4px rgba(0,0,0,0.5);
+        }
+        section[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
+            background: rgba(155,89,245,0.4) !important;
+            border-color: rgba(155,89,245,0.9) !important;
+        }
         .stTextInput input:focus, div[data-baseweb="input"] input:focus {
             border-color: var(--violet) !important;
             box-shadow: 0 0 0 2px var(--violet-glow) !important;
@@ -337,12 +562,31 @@ def inject_global_css():
             border: 1px solid rgba(155,89,245,0.35) !important;
         }
 
+        /* ─── SUGGESTIONS (Critères) ─── */
+        section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"],
+        div[data-testid="stVerticalBlock"] div.slider-header {
+             /* Target headers specifically */
+        }
+        .slider-label {
+            color: #ffffff !important;
+            font-weight: 800;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+        }
+        .slider-value {
+            color: var(--gold) !important;
+            font-weight: 900;
+        }
+        div[data-testid="stMarkdownContainer"] p[style*="font-style:italic"] {
+            color: #a0a8f0 !important;
+        }
+
         /* ─── CONTAINERS BORDER ─── */
         div[data-testid="stVerticalBlockBorderWrapper"] {
-            background: var(--surface) !important;
+            background: rgba(10, 10, 30, 0.85) !important;
+            border: 1px solid rgba(155,89,245,0.3) !important;
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
-            border: 1px solid var(--border-dim) !important;
+            border-radius: 12px;
             border-radius: var(--radius-lg) !important;
             box-shadow: var(--shadow) !important;
             transition: border-color .2s, box-shadow .2s;
@@ -414,7 +658,9 @@ def inject_global_css():
         unsafe_allow_html=True
     )
 
-
+#--------------------
+# FOND D'ÉCRAN
+#--------------------
 def set_background(image_path: Path, overlay_opacity: float = 0.82):
     """
     Fond image sur toute l'app (.stApp).
@@ -495,7 +741,9 @@ def render_banner(title: str, subtitle: str = "", icon: str = ""):
         unsafe_allow_html=True,
     )
 
-
+#--------------------
+# COMPOSANT : CARTE FILM
+#--------------------
 def card(title: str, body: str, icon: str = "", accent_color: str = "#FFD700") -> None:
     """Encart glassmorphism réutilisable."""
     st.markdown(
@@ -522,7 +770,9 @@ def card(title: str, body: str, icon: str = "", accent_color: str = "#FFD700") -
         unsafe_allow_html=True,
     )
 
-
+# --------------------
+# SIDEBAR : CARTE STATS DATASET
+# --------------------
 def sidebar_dataset_card(df: pd.DataFrame) -> None:
     """Carte stats dataset dans la sidebar (style glassmorphism premium)."""
     if df.empty:
@@ -598,6 +848,7 @@ def sidebar_dataset_card(df: pd.DataFrame) -> None:
         '</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
+
 # --------------------
 # RECUPERATION DES POSTERS
 # --------------------
@@ -723,7 +974,9 @@ def fit_reco_model(
 
     return X, model
 
-
+#--------------------
+# FONCTION RECOMMANDATION : obtenir recommandations + distance cosine
+#--------------------
 def get_recommendations_ml(
     df: pd.DataFrame,
     df_prepared: pd.DataFrame,
@@ -755,16 +1008,34 @@ def get_recommendations_ml(
 def render_movie_detail(row: pd.Series):
     """Fiche film détaillée (Style Premium)."""
 
-    # ── HEADER : Titre & Tagline
     titre = row.get("Titre_fr", "Titre inconnu")
-    st.markdown(f"""
-        <div style="margin-bottom: 24px;">
-            <h1 style="font-family:'Cinzel',serif; font-weight:900; margin:0; color:white; font-size:2.5rem;">{titre}</h1>
-            <div style="font-style:italic; color:#9B59F5; background:rgba(155,89,245,0.1); border-left:4px solid #9B59F5; padding:8px 16px; margin-top:12px; border-radius:4px;">
-                "L'expérience cinématographique transcendée."
+    is_fav = titre in st.session_state.get("favorites", set())
+
+    # Header interactif : Titre + Bouton Étoile
+    title_col, star_col = st.columns([0.88, 0.12])
+    with title_col:
+        st.markdown(f"""
+            <div style="margin-bottom: 8px;">
+                <h1 style="font-family:'Cinzel',serif; font-weight:900; margin:0; color:white; font-size:2.5rem;">{titre}</h1>
+                <div style="font-style:italic; color:#9B59F5; background:rgba(155,89,245,0.1); border-left:4px solid #9B59F5; padding:8px 16px; margin-top:12px; border-radius:4px;">
+                    "L'expérience cinématographique transcendée."
+                </div>
             </div>
-        </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+
+    with star_col:
+        # Espacement pour aligner avec le titre
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        star_icon = "★" if is_fav else "☆"
+        btn_type = "primary" if is_fav else "secondary"
+        st.button(
+            star_icon,
+            key=f"detail_fav_{titre}",
+            type=btn_type,
+            help="Ajouter / retirer des favoris",
+            on_click=toggle_favorite,
+            args=(titre, True, True) # is_callback=True, from_modal=True
+        )
 
     c1, c2 = st.columns([1, 2.2], gap="large")
 
@@ -811,26 +1082,26 @@ def render_movie_detail(row: pd.Series):
             </div>""", unsafe_allow_html=True)
 
     with c2:
-        # Bloc "Détails" style GRID (comme sur l'image)
+        # Bloc "Détails"
         st.markdown("<p style='font-family:\"Cinzel\",serif; color:#9B59F5; font-size:0.9rem; letter-spacing:2px; margin-bottom:12px;'>✦ DÉTAILS</p>", unsafe_allow_html=True)
 
         detail_cols = st.columns(2)
         with detail_cols[0]:
-            st.markdown(f"**🎭 Genres :** {row.get('Genres', '—')}")
-            st.markdown(f"**🎬 Réalisation :** {row.get('Realisateur', '—')}")
+            st.markdown(f"<span class='detail-label'>🎭 Genres :</span> {row.get('Genres', '—')}", unsafe_allow_html=True)
+            st.markdown(f"<span class='detail-label'>🎬 Réalisation :</span> {row.get('Realisateur', '—')}", unsafe_allow_html=True)
             # Nettoyage pays : supprimer [ ] ' "
             pays_raw = str(row.get('Pays_de_production', '—'))
             pays_clean = re.sub(r"[\[\]' \"]", "", pays_raw).replace(",", ", ")
-            st.markdown(f"**🌍 Pays :** {pays_clean if pays_clean else '—'}")
+            st.markdown(f"<span class='detail-label'>🌍 Pays :</span> {pays_clean if pays_clean else '—'}", unsafe_allow_html=True)
         with detail_cols[1]:
-            st.markdown(f"**🎥 Production :** IMDb Data")
-            st.markdown(f"**🗣️ Langue :** {row.get('Langue_originale', '—')}")
+            st.markdown(f"<span class='detail-label'>🎥 Production :</span> IMDb Data", unsafe_allow_html=True)
+            st.markdown(f"<span class='detail-label'>🗣️ Langue :</span> {row.get('Langue_originale', '—')}", unsafe_allow_html=True)
             box = row.get("Box_office", 0)
             if pd.isna(box) or box == 0:
                 box_str = "non renseigné"
             else:
                 box_str = f"{int(box):,}".replace(",", " ")
-            st.markdown(f"**💰 Box-office :** {box_str}")
+            st.markdown(f"<span class='detail-label'>💰 Box-office :</span> {box_str}", unsafe_allow_html=True)
 
         st.divider()
 
@@ -838,7 +1109,8 @@ def render_movie_detail(row: pd.Series):
         st.markdown("<p style='font-family:\"Cinzel\",serif; color:#9B59F5; font-size:0.9rem; letter-spacing:2px; margin-bottom:12px;'>✦ RÉSUMÉ</p>", unsafe_allow_html=True)
         synopsis = row.get("Synopsis", "")
         if isinstance(synopsis, str) and synopsis.strip():
-            st.markdown(f"<p style='color:#cbd0f0; line-height:1.6;'>{synopsis}</p>", unsafe_allow_html=True)
+            synopsis_fr = translate_resume(synopsis)
+            st.markdown(f"<p class='movie-synopsis'>{synopsis_fr}</p>", unsafe_allow_html=True)
         else:
             st.caption("Synopsis non renseigné")
 
@@ -848,10 +1120,12 @@ def render_movie_detail(row: pd.Series):
         st.markdown("<p style='font-family:\"Cinzel\",serif; color:#9B59F5; font-size:0.9rem; letter-spacing:2px; margin-bottom:12px;'>✦ CASTING</p>", unsafe_allow_html=True)
         acteurs = row.get("Acteur_actrice", "")
         if isinstance(acteurs, str) and acteurs.strip():
-            st.markdown(f"<div style='background:rgba(255,255,255,0.03); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);'>{acteurs}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='background:rgba(128,128,128,0.08); padding:16px; border-radius:8px; border:1px solid rgba(128,128,128,0.2); color:inherit; font-weight:500;'>{acteurs}</div>", unsafe_allow_html=True)
 
-
-def render_movie_card(row: pd.Series, df: pd.DataFrame, df_prepared: pd.DataFrame, X, model, key_prefix: str = "card"):
+# --------------------
+# FONCTIONS CARTE FILM
+# --------------------
+def render_movie_card(row: pd.Series, df: pd.DataFrame, df_prepared: pd.DataFrame, X, model, key_prefix: str = "card", from_modal: bool = False):
     """Composant universel pour afficher un film en grille avec bouton 'oeil'."""
     titre = row.get("Titre_fr", "Inconnu")
     poster_link = _poster_url(row.get("Poster", ""))
@@ -868,27 +1142,219 @@ def render_movie_card(row: pd.Series, df: pd.DataFrame, df_prepared: pd.DataFram
     if "Nombre_de_votes" in row and pd.notna(row["Nombre_de_votes"]):
         votes = f"{int(row['Nombre_de_votes']):,}".replace(",", " ")
 
-    st.markdown(f"""
-    <div class="movie-card" title="{titre}">
-        <div class="movie-poster-container">
-            <img src="{poster_link}" alt="{titre}" loading="lazy">
-            <div class="movie-gradient"></div>
-            <div class="movie-info">
-                <div class="movie-title">{titre}</div>
-                <div class="movie-meta">
-                    <span>{annee}</span>
-                    <span style="color:#FFD700;">★ {note}</span>
+    # État favori
+    is_fav = titre in st.session_state.get("favorites", set())
+    star_label = "\u2605" if is_fav else "\u2606"
+
+    # Encapsulation dans un container isolant la carte des autres éléments de la colonne
+    with st.container():
+        st.markdown(f"""
+        <div class="movie-card-outer">
+            <div class="movie-card" title="{titre}">
+                <div class="movie-poster-container">
+                    <img src="{poster_link}" alt="{titre}" loading="lazy">
+                    <div class="movie-gradient"></div>
+                    <div class="movie-info">
+                        <div class="movie-title">{titre}</div>
+                        <div class="movie-meta">
+                            <span>{annee}</span>
+                            <span style="color:#FFD700;">&#9733; {note}</span>
+                        </div>
+                        <div class="movie-votes">&#128101; {votes}</div>
+                    </div>
                 </div>
-                <div class="movie-votes"><span>👥</span> {votes}</div>
             </div>
         </div>
-    </div>
+        """, unsafe_allow_html=True)
+
+        # 2e enfant du stVerticalBlock → CSS le positionne en overlay sur l'étoile
+        btn_type = "primary" if is_fav else "secondary"
+        st.button(
+            star_label,
+            key=f"fav_{key_prefix}_{row.name}_{titre}",
+            type=btn_type,
+            help="Ajouter / retirer des favoris",
+            on_click=toggle_favorite,
+            args=(titre, True, from_modal) # from_modal passé ici
+        )
+
+        # Bouton sous l'affiche pour voir la fiche
+        st.button(
+            "Voir la fiche",
+            key=f"btn_{key_prefix}_{row.name}_{titre}",
+            use_container_width=True,
+            on_click=open_movie_details,
+            args=(titre,)
+        )
+
+
+
+# --------------------
+# FAVORITES BANNER (HORIZONTALE)
+# --------------------
+def render_favorites_banner(df: pd.DataFrame):
+    """Affiche une grille de 5 colonnes pour les films favoris avec le bouton 'Retirer' en haut."""
+    fav_titles = st.session_state.get("favorites", set())
+
+    st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+    st.markdown("<h2 style='font-family:\"Cinzel\",serif;font-size:1.5rem;font-weight:700;color:var(--violet);margin-bottom:20px;'>⭐ Mes films favoris</h2>", unsafe_allow_html=True)
+
+    if not fav_titles:
+        st.markdown("<p style='color:#7880a0;font-size:0.9rem;font-style:italic;text-align:center;padding:20px;'>Vous n'avez pas encore ajouté de films à vos favoris.</p>", unsafe_allow_html=True)
+        return
+
+    # Filtrage du DF
+    fav_df = df[df["Titre_fr"].isin(fav_titles)].head(20)
+
+    # CSS pour harmoniser le rendu des colonnes transformées en cartes
+    st.markdown("""
+    <style>
+    /* Style global pour les conteneurs de cartes dans les grilles */
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+        background: rgba(255,255,255,0.04) !important;
+        border: 1px solid rgba(155,89,245,0.2) !important;
+        border-radius: 12px !important;
+        padding: 8px !important;
+        transition: transform 0.3s ease, border-color 0.3s, background 0.3s !important;
+        display: flex !important;
+        flex-direction: column !important;
+        margin-bottom: 20px !important;
+    }
+
+    [data-testid="stHorizontalBlock"] > [data-testid="column"]:hover {
+        transform: translateY(-5px) !important;
+        border-color: #9B59F5 !important;
+        background: rgba(155,89,245,0.08) !important;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.3) !important;
+    }
+
+    /* =====================================================
+       BOUTONS ACTION FAVORIS (OEIL / CROIX)
+       ===================================================== */
+
+    div[data-testid="stVerticalBlock"]:has(.favorites-grid-scope) div[data-testid="stButton"] button {
+        background: rgba(255,255,255,0.03) !important;
+        border: 1px solid rgba(155,89,245,0.45) !important;
+        color: white !important;
+
+        border-radius: 8px !important;
+        height: 32px !important;
+
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+
+        transition: all 0.2s ease !important;
+    }
+
+    /* hover */
+    div[data-testid="stVerticalBlock"]:has(.favorites-grid-scope) div[data-testid="stButton"] button:hover {
+        background: rgba(155,89,245,0.18) !important;
+        border: 1px solid rgba(155,89,245,0.85) !important;
+        box-shadow: 0 0 10px rgba(155,89,245,0.35);
+        transform: translateY(-1px);
+    }
+
+    /* icones */
+    div[data-testid="stVerticalBlock"]:has(.favorites-grid-scope) div[data-testid="stButton"] button p {
+        color: white !important;
+        font-size: 16px !important;
+        margin: 0 !important;
+    }
+    </style>
     """, unsafe_allow_html=True)
 
-    # Bouton Streamlit overlay invisible pour le clic
-    if st.button("Voir la fiche", key=f"btn_{key_prefix}_{row.name}", use_container_width=True):
-        st.session_state["modal_active_movie"] = titre
-        st.rerun()
+    # Affichage en grille de 10
+    with st.container():
+        st.markdown('<div class="favorites-grid-scope"></div>', unsafe_allow_html=True)
+        for i in range(0, len(fav_df), 10):
+            cols = st.columns(10)
+            for j in range(10):
+                idx = i + j
+                if idx < len(fav_df):
+                    row = fav_df.iloc[idx]
+                    titre = row["Titre_fr"]
+                    poster = _poster_url(row.get("Poster", ""))
+                    if not poster: poster = "https://via.placeholder.com/160x240/1a1a2e/ffffff?text=No+Poster"
+
+                    annee = "—"
+                    if pd.notna(row.get("Annee_de_sortie")):
+                        try: annee = str(pd.to_datetime(row["Annee_de_sortie"]).year)
+                        except: pass
+                    note = f"{row.get('Note_moyenne', 0):.1f}"
+
+                    with cols[j]:
+                        # Visuel Affiche + Titre
+                        st.markdown(f"""
+                        <div style="width: 100%; aspect-ratio: 2/3; margin-bottom: 6px; border-radius: 6px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.4);">
+                            <img src="{poster}" alt="{titre}" style="width: 100%; height: 100%; object-fit: cover;">
+                        </div>
+                        <div style="color: white; font-size: 0.75rem; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;" title="{titre}">{titre}</div>
+                        <div style="color: #ccd0e0; font-size: 0.6rem; display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <span>{annee}</span>
+                            <span style="color: #FFD700;">★ {note}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        # Bouton Détails (œil) + Petit X rouge à droite (50/50)
+                        b_det, b_rem = st.columns(2)
+                        with b_det:
+                            st.button("👁", key=f"fav_det_{idx}", use_container_width=True,
+                                      on_click=open_movie_details, args=(titre,), help="Voir les détails")
+                        with b_rem:
+                            st.button("✕", key=f"fav_rem_{idx}", use_container_width=True,
+                                      on_click=toggle_favorite, args=(titre, True, False), help="Retirer")
+
+def render_recently_viewed_banner(df: pd.DataFrame):
+    """Affiche une grille de 5 colonnes pour les derniers films consultés."""
+    recent_titles = st.session_state.get("recently_viewed", [])
+    if not recent_titles:
+        return
+
+    st.markdown("<h2 style='font-family:\"Cinzel\",serif;font-size:1.5rem;font-weight:700;color:var(--violet);margin-bottom:20px;'>🕒 Derniers consultés</h2>", unsafe_allow_html=True)
+
+    # Trouver les data existantes et respecter l'ordre
+    recent_df_unordered = df[df["Titre_fr"].isin(recent_titles)]
+    ordered_rows = []
+    for t in recent_titles:
+        matching = recent_df_unordered[recent_df_unordered["Titre_fr"] == t]
+        if not matching.empty:
+            ordered_rows.append(matching.iloc[0])
+
+    recent_df = pd.DataFrame(ordered_rows).head(8) # Limite aux 8 derniers
+    if recent_df.empty:
+        return
+
+    # Grille de 8, alignement classique à gauche
+    cols = st.columns(8)
+    for i, (_, row) in enumerate(recent_df.iterrows()):
+        titre = row["Titre_fr"]
+        poster = _poster_url(row.get("Poster", ""))
+        if not poster: poster = "https://via.placeholder.com/160x240/1a1a2e/ffffff?text=No+Poster"
+
+        annee = "—"
+        if pd.notna(row.get("Annee_de_sortie")):
+            try: annee = str(pd.to_datetime(row["Annee_de_sortie"]).year)
+            except: pass
+        note = f"{row.get('Note_moyenne', 0):.1f}"
+
+        # Affichage séquentiel dans les colonnes disponibles
+        with cols[i]:
+            # Visuel Affiche + Titre
+            st.markdown(f"""
+            <div style="width: 100%; aspect-ratio: 2/3; margin-bottom: 6px; border-radius: 6px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.4);">
+                <img src="{poster}" alt="{titre}" style="width: 100%; height: 100%; object-fit: cover;">
+            </div>
+            <div style="color: white; font-size: 0.75rem; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;" title="{titre}">{titre}</div>
+            <div style="color: #ccd0e0; font-size: 0.6rem; display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span>{annee}</span>
+                <span style="color: #FFD700;">★ {note}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Bouton Détails en BAS (texte pour cette section)
+            st.button("Voir la fiche", key=f"rec_det_{i}", use_container_width=True,
+                      on_click=open_movie_details, args=(titre,))
+
 
 # --------------------
 # PAGES ACCEUIL
@@ -899,7 +1365,7 @@ def page_accueil(df: pd.DataFrame):
         """
         <div style="text-align:center;padding:70px 24px 40px;">
             <p style="font-family:'Cinzel',serif;font-size:.85rem;letter-spacing:.4em;
-                      color:#9B59F5;text-transform:uppercase;margin:0 0 18px;">
+                      color:#ffffff;text-transform:uppercase;margin:0 0 18px;">
                 ✦ &nbsp;ANALYSE &amp; RECOMMANDATION&nbsp; ✦
             </p>
             <h1 style="font-family:'Cinzel',serif;
@@ -988,6 +1454,14 @@ def page_accueil(df: pd.DataFrame):
         """, unsafe_allow_html=True)
 
     st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+
+    # ── RECENTS BANNER ────────────────────────────────────────────────
+    render_recently_viewed_banner(df)
+
+    # ── FAVORITES BANNER ──────────────────────────────────────────────
+    render_favorites_banner(df)
+
+    st.markdown("<div style='height:40px'></div>", unsafe_allow_html=True)
 
 
 # --------------------
@@ -1162,12 +1636,14 @@ def page_recherche(df: pd.DataFrame, filtres: dict):
     </style>
     """, unsafe_allow_html=True)
 
-    cols = st.columns(5)  # 5 films par ligne
-
-    for i, (_, row) in enumerate(d_view.iterrows()):
-        col = cols[i % 5]
-        with col:
-            render_movie_card(row, df, df_prepared, X, model, key_prefix="cat")
+    # Affichage par ligne de 5 pour éviter les conflits CSS entre colonnes
+    for i in range(0, len(d_view), 5):
+        cols = st.columns(5)
+        for j in range(5):
+            if i + j < len(d_view):
+                row = d_view.iloc[i + j]
+                with cols[j]:
+                    render_movie_card(row, df, df_prepared, X, model, key_prefix=f"cat_{i}_{j}")
 
     if len(d) > 50:
         st.markdown(f"<p style='text-align:center;color:#8890cc;margin-top:20px;'>(50 premiers résultats affichés sur {len(d)})</p>", unsafe_allow_html=True)
@@ -1536,7 +2012,7 @@ def dialog_movie_detail(df: pd.DataFrame, df_prepared: pd.DataFrame, X, model):
             cols = st.columns(5)
             for i, (_, r) in enumerate(reco_df.iterrows()):
                 with cols[i % 5]:
-                    render_movie_card(r, df, df_prepared, X, model, key_prefix="modal_reco")
+                    render_movie_card(r, df, df_prepared, X, model, key_prefix="modal_reco", from_modal=True)
 
         st.markdown("<br/>", unsafe_allow_html=True)
         if st.button("❌ Fermer la fiche", use_container_width=True):
@@ -1611,7 +2087,7 @@ def page_selection_films_ml(df: pd.DataFrame, poids: dict):
         cols = st.columns(5)
         for i, (_, r) in enumerate(reco_df.iterrows()):
             with cols[i % 5]:
-                render_movie_card(r, df, df_prepared, X, model, key_prefix="reco")
+                render_movie_card(r, df, df_prepared, X, model, key_prefix="reco", from_modal=False)
 
         if st.button("🗑️ Effacer les résultats"):
             if "current_reco_results" in st.session_state:
@@ -1737,11 +2213,28 @@ def page_a_propos(df: pd.DataFrame):
 # APP MAIN
 # --------------------
 def main():
+    # ── Initialisation Espace Utilisateur ─────────────────────────────
+    init_user_space()
+
     # ── CSS global + background (toujours en premier) ─────────────────
     inject_global_css()
     set_background(IMG_HOME)
 
     df = load_data(DATA_PATH)
+
+    # ── TRAITEMENT QUERY PARAMS (clic \u00e9toile favoris via href HTML) ──────
+    init_user_space()  # s'assure que session_state est initialis\u00e9
+    params = st.query_params.to_dict()
+
+    if params.get("action") == "fav" and "movie" in params:
+        movie_title = urllib.parse.unquote(params["movie"])
+        favs = st.session_state.get("favorites", set())
+        if movie_title in favs: favs.discard(movie_title)
+        else: favs.add(movie_title)
+        st.session_state["favorites"] = favs
+        save_favorites(favs)
+        st.query_params.clear()
+        st.rerun()
 
     if "Annee_de_sortie" in df.columns:
         df["Annee_de_sortie"] = pd.to_datetime(df["Annee_de_sortie"], errors="coerce")
@@ -1751,14 +2244,11 @@ def main():
         # Logo / titre premium
         st.markdown(
             """
-            <div style="text-align:center;padding:18px 4px 10px;">
-                <div style="font-family:'Cinzel',serif;font-size:1.6rem;font-weight:900;
-                            color:#FFD700;letter-spacing:.1em;line-height:1.1;
-                            text-shadow:0 0 16px rgba(255,215,0,.45);">
-                    🎬 <span style="color:#FFD700;">CINÉ</span><span style="color:#ffffff;">VISION</span>
+            <div class="sidebar-logo-wrap">
+                <div class="sidebar-logo-title">
+                    🎬 <span class="sidebar-logo-cine">CINÉ</span><span class="sidebar-logo-vision">VISION</span>
                 </div>
-                <div style="font-size:.72rem;color:#7880a0;letter-spacing:.2em;
-                            text-transform:uppercase;margin-top:4px;">
+                <div class="sidebar-logo-subtitle">
                     Films &amp; Recommandations
                 </div>
             </div>
@@ -1798,17 +2288,6 @@ def main():
         elif df.empty:
             st.warning(f"CSV introuvable : {DATA_PATH}")
 
-        # Note contexte
-        st.markdown(
-            """
-            <div style="font-size:.78rem;color:#6870a0;line-height:1.55;padding:4px 2px;text-align:center;">
-                Films français depuis <b style='color:#a8b0dc;'>1946</b><br>
-                Films internationaux majoritairement depuis <b style='color:#a8b0dc;'>2000</b>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:14px 0;'/>", unsafe_allow_html=True)
 
         # ── SIDEBAR CONTEXTUELLE ──────────────────────────────────
         filtres = {}
@@ -1822,9 +2301,9 @@ def main():
             genres_uniques = sorted([g for g in genres_uniques.unique().tolist() if g and g != "\n"])
 
             st.markdown("""
-                <p style='color:#ffffff;font-family:\'Cinzel\',serif;font-size:.75rem;
-                font-weight:700;letter-spacing:.12em;text-transform:uppercase;
-                margin:0 0 14px;text-align:center;'>FILTRES DU CATALOGUE</p>
+                <p style='color:var(--violet);font-family:"Cinzel",serif;font-size:.78rem;
+                font-weight:800;letter-spacing:.12em;text-transform:uppercase;
+                margin:0 0 14px;text-align:center;'>✦ FILTRES DU CATALOGUE</p>
             """, unsafe_allow_html=True)
 
             title_q = st.text_input("🔍 Titre", value="", placeholder="ex: Avatar, Matrix...", key="cat_title")
@@ -1863,9 +2342,9 @@ def main():
 
         elif choice == "Suggestions":
             st.markdown("""
-                <p style='color:#ffffff;font-family:"Cinzel",serif;font-size:1.05rem;
-                font-weight:700;letter-spacing:0.05em;
-                margin:0 0 10px;text-align:center;'>Réglage des critères</p>
+                <p style='color:var(--violet);font-family:"Cinzel",serif;font-size:1.05rem;
+                font-weight:800;letter-spacing:0.05em;
+                margin:0 0 10px;text-align:center;'>✦ RÉGLAGE DES CRITÈRES</p>
             """, unsafe_allow_html=True)
 
             # Module compact dans une seule carte (st.container(border=True))
@@ -1905,6 +2384,44 @@ def main():
                         Plus le curseur est fort, plus ce critère influence le modèle.
                     </p>
                 """, unsafe_allow_html=True)
+
+        # ── MON ESPACE ──
+        st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:20px 0 14px;'/>", unsafe_allow_html=True)
+        st.markdown('<p style="color:#ffffff;font-family:\'Cinzel\',serif;font-size:.75rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin:0 0 16px;text-align:center;">👤 MON ESPACE</p>', unsafe_allow_html=True)
+
+        # Correction calcul favoris (intersection avec le DF pour être sûr)
+        fav_titles_in_session = st.session_state.get("favorites", set())
+        fav_count = len(df[df["Titre_fr"].isin(fav_titles_in_session)])
+        st.markdown(f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 10px; margin-bottom:10px;">
+                <span style="font-size:0.85rem; color:var(--violet); font-weight:700;">⭐ Favoris</span>
+                <span style="background:var(--violet); color:white; font-size:0.7rem; font-weight:700;
+                             padding:1px 8px; border-radius:10px; box-shadow:0 0 8px rgba(155,89,245,0.4);">{fav_count}</span>
+            </div>
+        """, unsafe_allow_html=True)
+
+        recents = st.session_state.get("recently_viewed", [])
+        if recents:
+            st.markdown("<p style='font-size:0.7rem; color:var(--violet); padding:0 10px; margin:10px 0 5px; text-transform:uppercase; font-weight:700; letter-spacing:1px;'>✦ Derniers consultés</p>", unsafe_allow_html=True)
+            for m_title in recents[:5]:
+                if st.button(m_title, key=f"recent_{m_title}", help="Réouvrir la fiche", use_container_width=True):
+                    st.session_state["modal_active_movie"] = m_title
+                    add_recently_viewed(m_title)
+                    st.rerun()
+        else:
+            st.markdown("<p style='font-size:0.75rem; color:#586080; text-align:center; font-style:italic; padding:10px;'>Aucun film consulté</p>", unsafe_allow_html=True)
+
+
+        # Note contexte
+        st.markdown(
+            """
+            <div style="font-size:.78rem;color:#6870a0;line-height:1.55;padding:4px 2px;text-align:center;margin-top:15px;">
+                Films français depuis <b style='color:#a8b0dc;'>1946</b><br>
+                Films internationaux majoritairement depuis <b style='color:#a8b0dc;'>2000</b>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # ── MODAL GLOBALE ─────────────────────────────────────────────────
     if st.session_state.get("modal_active_movie"):
